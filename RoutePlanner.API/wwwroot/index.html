@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Adana Rota Planlayıcı</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header>
+  <span>🗺️</span>
+  <h1>Adana Rota Planlayıcı</h1>
+</header>
+
+<div class="layout">
+
+  <!-- ── Sidebar ── -->
+  <div class="sidebar">
+    <h2>Rota Sorgula</h2>
+
+    <div>
+      <label for="selBaslangic">Başlangıç Noktası</label>
+      <select id="selBaslangic"><option value="">-- Yükleniyor... --</option></select>
+    </div>
+
+    <div>
+      <label for="selHedef">Hedef Nokta</label>
+      <select id="selHedef"><option value="">-- Yükleniyor... --</option></select>
+    </div>
+
+    <!-- Rota türü -->
+    <div>
+      <label>Rota Türü</label>
+      <div class="radio-group">
+        <label class="radio-label"><input type="radio" name="rotaTipi" value="planla" checked> 🚀 En Hızlı</label>
+        <label class="radio-label"><input type="radio" name="rotaTipi" value="ucuz">   💰 En Ucuz</label>
+        <label class="radio-label"><input type="radio" name="rotaTipi" value="metro">  🚇 Sadece Metro</label>
+      </div>
+    </div>
+
+    <button id="btnPlanla" disabled>Rota Planla</button>
+
+    <div class="spinner" id="spinner"></div>
+    <div id="hataMsg"></div>
+
+    <!-- Sonuç -->
+    <div id="sonucPanel">
+      <div class="ozet" id="ozetKart"></div>
+      <br/>
+      <h2>Adım Adım Yol</h2>
+      <div class="adimlar" id="adimListesi"></div>
+    </div>
+
+    <!-- İstatistik -->
+    <div id="istatistikPanel">
+      <h2>📊 En Yoğun Duraklar</h2>
+      <div id="istatistikListesi"><span style="font-size:.8rem;color:#999">Yükleniyor...</span></div>
+    </div>
+  </div>
+
+  <!-- ── Map ── -->
+  <div id="map" style="position:relative;">
+    <div class="map-legend" id="mapLegend" style="display:none">
+      <div style="font-weight:600;margin-bottom:3px">Lejant</div>
+      <div class="legend-item"><div class="legend-line" style="background:#e53935"></div> Metro</div>
+      <div class="legend-item"><div class="legend-line" style="background:#f9a825"></div> Otobüs</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#2e7d32"></div> Başlangıç</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#b71c1c"></div> Hedef</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#7c3aed"></div> Aktarma</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#60a5fa"></div> Ara Durak</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const API_BASE = '';
+
+  // ── Harita ───────────────────────────────────────────────
+  const map = L.map('map', { attributionControl: false })
+               .setView([37.02, 35.33], 13);
+
+  L.tileLayer('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII=',
+    { opacity: 0 }).addTo(map);
+
+  let rotaKatmanlari = [];
+  let rotaMarkerlar  = [];
+  let markerGrup     = L.layerGroup().addTo(map);
+  let istasyonlar    = [];
+
+  // ── İstasyonları yükle ───────────────────────────────────
+  async function istasyonlariYukle() {
+    try {
+      const res = await fetch(`${API_BASE}/api/istasyon`);
+      if (!res.ok) throw new Error();
+      istasyonlar = await res.json();
+
+      // id sırasına göre sırala
+      istasyonlar.sort((a, b) => {
+        const n = s => parseInt(s.id?.replace(/\D/g,'') || '0');
+        return n(a) - n(b);
+      });
+
+      // koordinat ata
+      istasyonlar.forEach(ist => { ist._lat = ist.enlem; ist._lng = ist.boylam; });
+
+      // arka plan hat çizgisi
+      L.polyline(istasyonlar.map(i => [i._lat, i._lng]),
+        { color:'#334155', weight:3, opacity:0.5 }).addTo(markerGrup);
+
+      // durak markerları — hat bilgili popup
+      istasyonlar.forEach(ist => {
+        const hatBilgi = ist.hatListesi?.length
+          ? ist.hatListesi.map((h,i) => {
+              const t = ist.turListesi?.[i] || '';
+              return `<span class="badge ${t==='metro'?'badge-metro':'badge-otobus'}">${h}</span>`;
+            }).join(' ')
+          : '<i style="color:#aaa">—</i>';
+
+        const popupHtml = `
+          <div style="min-width:160px">
+            <b style="font-size:.95rem">${ist.isim}</b><br>
+            <div style="margin-top:5px;font-size:.78rem;color:#aaa">Geçen Hatlar:</div>
+            <div style="margin-top:3px">${hatBilgi}</div>
+          </div>`;
+
+        L.circleMarker([ist._lat, ist._lng], {
+          radius: 10, color:'#60a5fa', fillColor:'#0f172a', fillOpacity:1, weight:2.5
+        })
+        .bindTooltip(`<b>${ist.isim}</b>`, { direction:'top', offset:[0,-12], className:'dark-tip' })
+        .bindPopup(popupHtml, { className:'dark-popup' })
+        .addTo(markerGrup);
+      });
+
+      const latlngs = istasyonlar.filter(i=>i._lat).map(i=>[i._lat,i._lng]);
+      if (latlngs.length) map.fitBounds(L.latLngBounds(latlngs), { padding:[40,40] });
+
+      // dropdown
+      const sorted = [...istasyonlar].sort((a,b) => a.isim.localeCompare(b.isim,'tr'));
+      const opts = sorted.map(i => `<option value="${i.isim}">${i.isim}</option>`).join('');
+      document.getElementById('selBaslangic').innerHTML = '<option value="">-- Seçiniz --</option>' + opts;
+      document.getElementById('selHedef').innerHTML     = '<option value="">-- Seçiniz --</option>' + opts;
+      document.getElementById('btnPlanla').disabled = false;
+
+    } catch {
+      document.getElementById('hataMsg').textContent = '⚠️ İstasyonlar yüklenemedi.';
+      document.getElementById('hataMsg').style.display = 'block';
+    }
+  }
+
+  // ── İstatistikleri yükle ─────────────────────────────────
+  async function istatistikleriYukle() {
+    try {
+      const res = await fetch(`${API_BASE}/api/istasyon/istatistik`);
+      if (!res.ok) throw new Error();
+      const liste = await res.json();
+      const el = document.getElementById('istatistikListesi');
+      el.innerHTML = liste.map((ist, i) => `
+        <div class="stat-item">
+          <span class="stat-rank">${i+1}</span>
+          <span class="stat-isim">${ist.isim}</span>
+          <span class="stat-sayi">${ist.baglantiSayisi} bağlantı</span>
+        </div>`).join('');
+    } catch {
+      document.getElementById('istatistikListesi').innerHTML =
+        '<span style="font-size:.8rem;color:#999">Yüklenemedi.</span>';
+    }
+  }
+
+  // ── Rota planla ──────────────────────────────────────────
+  async function rotaPlanla() {
+    const baslangic  = document.getElementById('selBaslangic').value;
+    const hedef      = document.getElementById('selHedef').value;
+    const rotaTipi   = document.querySelector('input[name="rotaTipi"]:checked').value;
+
+    // Sıfırla
+    document.getElementById('hataMsg').style.display = 'none';
+    document.getElementById('sonucPanel').style.display = 'none';
+    document.getElementById('mapLegend').style.display = 'none';
+    rotaKatmanlari.forEach(l => map.removeLayer(l)); rotaKatmanlari = [];
+    rotaMarkerlar.forEach(m => map.removeLayer(m));  rotaMarkerlar  = [];
+
+    if (!baslangic || !hedef)        { gosterHata('Lütfen başlangıç ve hedef seçin.'); return; }
+    if (baslangic === hedef)         { gosterHata('Başlangıç ve hedef aynı olamaz.'); return; }
+
+    document.getElementById('spinner').style.display = 'block';
+    document.getElementById('btnPlanla').disabled = true;
+
+    try {
+      const endpoint = `/api/rota/${rotaTipi}?baslangic=${encodeURIComponent(baslangic)}&hedef=${encodeURIComponent(hedef)}`;
+      const res = await fetch(API_BASE + endpoint);
+      if (res.status === 404) { gosterHata('Bu iki nokta arasında rota bulunamadı.'); return; }
+      if (!res.ok) throw new Error('Sunucu hatası');
+
+      const data = await res.json();
+      rotayiGoster(data);
+
+    } catch (e) {
+      gosterHata('Rota hesaplanamadı: ' + e.message);
+    } finally {
+      document.getElementById('spinner').style.display = 'none';
+      document.getElementById('btnPlanla').disabled = false;
+    }
+  }
+
+  // ── Marker yardımcısı ─────────────────────────────────────
+  function daireMarker(latlng, renk, kenar, yaricap, popupHtml) {
+    const m = L.circleMarker(latlng, {
+      radius: yaricap, color: kenar, fillColor: renk, fillOpacity: 1, weight: 2.5
+    }).bindPopup(popupHtml, { className:'dark-popup' });
+    rotaMarkerlar.push(m);
+    m.addTo(map);
+    return m;
+  }
+
+  // ── Sonucu göster ─────────────────────────────────────────
+  function rotayiGoster(data) {
+    document.getElementById('sonucPanel').style.display = 'block';
+
+    // Mod etiketi
+    const modEtiket = {
+      hizli:'🚀 En Hızlı', ucuz:'💰 En Ucuz',
+      metro:'🚇 Sadece Metro'
+    }[data.mod] || '';
+
+    // Özet
+    document.getElementById('ozetKart').innerHTML = `
+      <div><b>${modEtiket}</b> &nbsp;|&nbsp; <strong>${data.baslangic}</strong> → <strong>${data.hedef}</strong></div>
+      <div style="margin-top:6px">
+        ⏱️ <strong>${data.toplamSure} dk</strong> &nbsp;|&nbsp;
+        📍 <strong>${data.toplamMesafe?.toFixed(1)} km</strong> &nbsp;|&nbsp;
+        💰 <strong>${data.toplamMaliyet?.toFixed(0)} TL</strong> &nbsp;|&nbsp;
+        🔢 ${data.rota.length} durak
+        ${data.aktarmaSayisi != null ? `&nbsp;|&nbsp; 🔄 ${data.aktarmaSayisi} aktarma` : ''}
+      </div>`;
+
+    // Adım listesi
+    const liste = document.getElementById('adimListesi');
+    liste.innerHTML = `
+      <div class="adim">
+        <div class="adim-icon" style="background:#e8f5e9">🟢</div>
+        <div class="adim-bilgi">
+          <div class="adim-isim">${data.baslangic}</div>
+          <div class="adim-detay">Başlangıç noktası</div>
+        </div>
+      </div>`;
+
+    const transferIdxSet = new Set();
+    for (let i = 1; i < data.rota.length; i++)
+      if (data.rota[i].tur !== data.rota[i-1].tur) transferIdxSet.add(i);
+
+    data.rota.forEach((adim, i) => {
+      const isMetro = adim.tur === 'metro';
+      const isLast  = i === data.rota.length - 1;
+      const isXfer  = transferIdxSet.has(i);
+      const bordRenk = isMetro ? '#e53935' : '#f9a825';
+      const bg = isMetro ? '#fde8e8' : '#fef9e6';
+      const emoji = isLast ? '🔴' : (isMetro ? '🚇' : '🚌');
+      const prefix = isXfer ? '<span class="badge badge-transfer">🔄 Aktarma</span> ' : '';
+      liste.innerHTML += `
+        <div class="adim" style="border-left:3px solid ${bordRenk}">
+          <div class="adim-icon" style="background:${bg}">${emoji}</div>
+          <div class="adim-bilgi">
+            <div class="adim-isim">${adim.isim}${isLast?'<span style="color:#b71c1c;font-size:.75rem"> (Hedef)</span>':''}</div>
+            <div class="adim-detay">
+              ${prefix}<span class="badge ${isMetro?'badge-metro':'badge-otobus'}">${adim.hat||adim.tur}</span>
+              &nbsp;${adim.sure} dk · ${adim.mesafe} km · ${adim.maliyet} TL
+            </div>
+          </div>
+        </div>`;
+    });
+
+    // ── Harita ───────────────────────────────────────────────
+    const noktalar = [];
+    const basIst = istasyonlar.find(s => s.isim === data.baslangic);
+    if (basIst?._lat) noktalar.push({ ll:[basIst._lat, basIst._lng], adim:null, idx:-1 });
+
+    data.rota.forEach((adim, i) => {
+      const ist = istasyonlar.find(s => s.isim === adim.isim);
+      if (ist?._lat) noktalar.push({ ll:[ist._lat, ist._lng], adim, idx:i });
+    });
+
+    if (noktalar.length < 2) return;
+
+    const bounds = L.latLngBounds();
+    for (let i = 1; i < noktalar.length; i++) {
+      const prev = noktalar[i-1], curr = noktalar[i];
+      const isMetro = curr.adim?.tur === 'metro';
+      const renk    = isMetro ? '#e53935' : '#f9a825';
+      const hat     = curr.adim?.hat || curr.adim?.tur || '';
+      const sure    = curr.adim?.sure || 0;
+      const maliyet = curr.adim?.maliyet || 0;
+
+      // Hat bilgili popup
+      const linePopup = `
+        <div style="min-width:140px">
+          <b>${isMetro ? '🚇 Metro' : '🚌 Otobüs'}</b><br>
+          <span class="badge ${isMetro?'badge-metro':'badge-otobus'}">${hat}</span><br>
+          <div style="margin-top:4px;font-size:.8rem">
+            ${curr.adim.isim}<br>
+            ⏱️ ${sure} dk &nbsp; 💰 ${maliyet} TL
+          </div>
+        </div>`;
+
+      const line = L.polyline([prev.ll, curr.ll], {
+        color: renk, weight: 5, opacity: .9
+      }).bindPopup(linePopup, { className:'dark-popup' })
+        .bindTooltip(`${isMetro?'Metro':'Otobüs'} · ${hat}`, { sticky:true, className:'dark-tip' });
+      line.addTo(map);
+      rotaKatmanlari.push(line);
+      bounds.extend(prev.ll);
+      bounds.extend(curr.ll);
+    }
+
+    // Durak markerları
+    noktalar.forEach((n, i) => {
+      const isFirst = i === 0, isLast = i === noktalar.length-1;
+      const isXfer  = !isFirst && !isLast && transferIdxSet.has(n.idx);
+      const isMetro = n.adim?.tur === 'metro';
+      let renk, kenar, yari, popupIcerik;
+
+      if (isFirst) {
+        renk='#2e7d32'; kenar='#fff'; yari=15;
+        popupIcerik=`<b>🟢 ${data.baslangic}</b><br><i>Başlangıç</i>`;
+      } else if (isLast) {
+        renk='#b71c1c'; kenar='#fff'; yari=15;
+        popupIcerik=`<b>🔴 ${data.hedef}</b><br><i>Hedef</i>`;
+      } else if (isXfer) {
+        renk='#7c3aed'; kenar='#fff'; yari=13;
+        const tf = data.rota[n.idx-1]?.tur||'', tt = n.adim?.tur||'';
+        popupIcerik=`<b>🔄 ${n.adim.isim}</b><br><i>Aktarma: ${tf} → ${tt}</i>`;
+      } else {
+        renk=isMetro?'#e53935':'#f9a825'; kenar='#fff'; yari=10;
+        popupIcerik=`<b>${n.adim.isim}</b><br>
+          <span class="badge ${isMetro?'badge-metro':'badge-otobus'}">${n.adim.hat||n.adim.tur}</span>
+          &nbsp;${n.adim.sure} dk · ${n.adim.maliyet} TL`;
+      }
+
+      const m = daireMarker(n.ll, renk, kenar, yari, popupIcerik);
+      if (isFirst || isLast) m.openPopup();
+    });
+
+    document.getElementById('mapLegend').style.display = 'flex';
+    map.fitBounds(bounds, { padding:[50,50] });
+  }
+
+  // ── Hata ─────────────────────────────────────────────────
+  function gosterHata(msg) {
+    const el = document.getElementById('hataMsg');
+    el.textContent = '⚠️ ' + msg;
+    el.style.display = 'block';
+    document.getElementById('spinner').style.display = 'none';
+    document.getElementById('btnPlanla').disabled = false;
+  }
+
+  // ── Başlat ───────────────────────────────────────────────
+  document.getElementById('btnPlanla').addEventListener('click', rotaPlanla);
+  istasyonlariYukle();
+  istatistikleriYukle();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,131 @@
+========================================================================
+NEO4J TABANLI ŞEHİR ROTA PLANLAYICI - DETAYLI PROJE RAPORU
+========================================================================
+
+1. PROJE ÖZETİ VE AMACI
+------------------------------------------------------------------------
+Bu proje, Adana şehri için tasarlanmış, toplu taşıma (metro ve otobüs) hatlarını kullanarak başlangıç noktasından hedef noktaya en uygun rotaları hesaplayan bir yönlendirme (routing) uygulamasıdır. Projenin temel amacı, karmaşık ağ (network) ve rota problemlerinin çözümünde geleneksel ilişkisel veritabanları (SQL) yerine Çizge Veritabanı (Graph Database) teknolojilerinin gücünü ve avantajlarını göstermektir. 
+
+Kullanıcılar harita üzerinden veya listeden istasyon seçerek "En Hızlı", "En Ucuz" veya "Sadece Metro" gibi spesifik algoritmalarla rota planlayabilir.
+
+
+2. KULLANILAN TEKNOLOJİLER VE KÜTÜPHANELER
+------------------------------------------------------------------------
+- **Neo4j (Veritabanı):** Graph (Çizge) tabanlı NoSQL veritabanı. Düğümler (istasyonlar) ve kenarlar (hatlar/bağlantılar) aracılığıyla veriyi saklamak için kullanıldı.
+- **Cypher Query Language (CQL):** Neo4j üzerinde verileri sorgulamak, filtrelemek ve graf algoritmalarını çalıştırmak için kullanılan sorgu dili.
+- **APOC Kütüphanesi (Awesome Procedures On Cypher):** Dijkstra gibi gelişmiş graf algoritmalarını (apoc.algo.dijkstra) çalıştırmak için Neo4j eklentisi olarak kullanıldı.
+- **C# / .NET 8 Web API (Backend):** Sunucu tarafındaki iş mantığını yönetmek ve frontend'in tüketebileceği RESTful API'ları sunmak için kullanıldı.
+- **Neo4j.Driver (NuGet):** C# uygulamasının Neo4j veritabanı ile asenkron şekilde iletişim kurmasını sağlayan resmi sürücü.
+- **HTML5, CSS3, Vanilla JavaScript (Frontend):** Kullanıcı arayüzünü (UI) oluşturmak ve API'larla asenkron (fetch) iletişim kurmak için modern, frameworksüz web teknolojileri.
+- **Leaflet.js:** Harita alt yapısını sağlamak, istasyonları marker olarak çizmek ve rotaları poligon/çizgi olarak görselleştirmek için kullanılan açık kaynaklı harita kütüphanesi.
+
+
+3. GRAF VERİ MODELLEMESİ VE MİMARİ
+------------------------------------------------------------------------
+### 3.1. Düğüm ve İlişki Tasarımı
+Proje, temel olarak iki kavram üzerine inşa edilmiştir:
+- **Düğümler (Nodes):** `Istasyon` ve `Lokasyon` etiketlerine sahiptir. 
+  - Özellikler (Properties): `id`, `isim`, `enlem` (lat), `boylam` (lng).
+- **İlişkiler (Relationships):** İki istasyon arasındaki fiziksel bağlantıyı temsil eden `BAGLANTI` türüdür.
+  - Özellikler (Ağırlıklar): `mesafe` (km), `sure` (dk), `maliyet` (TL), `tur` (metro/otobüs), `hat` (hat no).
+
+### 3.2. Graph DB vs İlişkisel DB (Neden Neo4j?)
+Rota bulma problemi SQL (İlişkisel) tabanlı sistemlerde çok fazla `JOIN` işlemi ve karmaşık `RECURSIVE CTE` (Ortak Tablo İfadeleri) gerektirir. Derinlik arttıkça SQL performansı üssel olarak düşer. Neo4j gibi Graf veritabanlarında ise "Index-Free Adjacency" sayesinde ilişkiler fiziksel işaretçiler olarak tutulur ve birbirine bağlı istasyonlar arasında gezinmek sabit veya lineer zaman alır. Bu nedenle mesafe ve maliyet hesaplamaları milisaniyeler içinde gerçekleşir.
+
+
+4. CYPHER SORGULARI VE KULLANIM ALANLARI
+------------------------------------------------------------------------
+Projemizde toplam 6 adet özelleştirilmiş, iş kurallarına dayalı Cypher sorgusu bulunmaktadır.
+
+### Sorgu 1: En Hızlı Rota (Süre Odaklı Dijkstra Algoritması)
+- **Nerede Kullanıldı:** `RotaController.cs` -> `/api/rota/planla`
+- **Neden Kullanıldı:** İki nokta arasındaki geçiş sürelerini (sure ağırlığı) baz alarak en kısa zamanı hesaplayan matematiksel Dijkstra algoritmasını işletmek için.
+- **Kod:**
+```cypher
+MATCH (s:Lokasyon {isim: $baslangic}), (e:Lokasyon {isim: $hedef})
+CALL apoc.algo.dijkstra(s, e, 'BAGLANTI', 'sure') YIELD path, weight AS toplamSure
+RETURN path,
+       toplamSure,
+       reduce(x=0.0, r IN relationships(path) | x+r.mesafe)  AS toplamMesafe,
+       reduce(x=0.0, r IN relationships(path) | x+r.maliyet) AS toplamMaliyet
+```
+
+### Sorgu 2: En Ucuz Rota (Maliyet Odaklı Dijkstra Algoritması)
+- **Nerede Kullanıldı:** `RotaController.cs` -> `/api/rota/ucuz`
+- **Neden Kullanıldı:** Süreden bağımsız olarak, sadece harcanacak bilet tutarını veya geçiş maliyetini ('maliyet' ağırlığı) en aza indirmek için.
+- **Kod:**
+```cypher
+MATCH (s:Lokasyon {isim: $baslangic}), (e:Lokasyon {isim: $hedef})
+CALL apoc.algo.dijkstra(s, e, 'BAGLANTI', 'maliyet') YIELD path, weight AS toplamMaliyet
+RETURN path,
+       toplamMaliyet,
+       reduce(x=0.0, r IN relationships(path) | x+r.sure)    AS toplamSure,
+       reduce(x=0.0, r IN relationships(path) | x+r.mesafe)  AS toplamMesafe
+```
+
+### Sorgu 3: Sadece Metro Rotaları
+- **Nerede Kullanıldı:** `RotaController.cs` -> `/api/rota/metro`
+- **Neden Kullanıldı:** Otobüs veya diğer hatları dışlayıp graf üzerinde SADECE `tur = 'metro'` koşulunu sağlayan ilişkiler üzerinde `shortestPath` (en kısa yol) bulmak için.
+- **Kod:**
+```cypher
+MATCH (s:Lokasyon {isim: $baslangic}), (e:Lokasyon {isim: $hedef})
+MATCH path = shortestPath((s)-[rels:BAGLANTI*..60]-(e))
+WHERE ALL(r IN rels WHERE r.tur = 'metro')
+RETURN path,
+       reduce(x=0.0, r IN relationships(path) | x+r.sure)    AS toplamSure,
+       reduce(x=0.0, r IN relationships(path) | x+r.mesafe)  AS toplamMesafe,
+       reduce(x=0.0, r IN relationships(path) | x+r.maliyet) AS toplamMaliyet
+```
+
+### Sorgu 4: Aktarma Limitli Rota Hesaplaması
+- **Nerede Kullanıldı:** `RotaController.cs` -> `/api/rota/aktarmali`
+- **Neden Kullanıldı:** Kullanıcının otobüsten metroya (veya farklı hatlara) çok fazla aktarma yapmasını engellemek için aktarma sayısını hesaplayarak sınır getirmek için.
+- **Kod:**
+```cypher
+MATCH (s:Lokasyon {isim: $baslangic}), (e:Lokasyon {isim: $hedef})
+CALL {
+    WITH s, e
+    MATCH p1 = shortestPath((s)-[:BAGLANTI*..60]-(e)) RETURN p1 AS path
+    UNION
+    WITH s, e
+    MATCH p2 = shortestPath((s)-[rels:BAGLANTI*..60]-(e))
+    WHERE ALL(r IN rels WHERE r.tur = 'metro') RETURN p2 AS path
+}
+WITH path, [r IN relationships(path) | r.tur] AS turlar
+WITH path, turlar, 
+     reduce(a=0, i IN range(1, size(turlar)-1) |
+       CASE WHEN turlar[i] <> turlar[i-1] THEN a+1 ELSE a END) AS aktarmaSayisi
+WHERE aktarmaSayisi <= $max
+RETURN path, aktarmaSayisi LIMIT 1
+```
+
+### Sorgu 5: Tüm İstasyonların Harita ve Menüler İçin Çekilmesi
+- **Nerede Kullanıldı:** `IstasyonController.cs` -> `/api/istasyon`
+- **Neden Kullanıldı:** Harita ilk açıldığında pinlerin (marker) çizilmesi ve dropdown menülerine durak isimlerinin doldurulması için. Aynı zamanda hangi durağın hangi hatta sahip olduğu bilgisi toplanır (`collect`).
+- **Kod:**
+```cypher
+MATCH (s:Istasyon)
+OPTIONAL MATCH (s)-[r:BAGLANTI]-()
+WITH s,
+     [x IN collect(DISTINCT r.hat) WHERE x IS NOT NULL] AS hatlar,
+     [x IN collect(DISTINCT r.tur) WHERE x IS NOT NULL] AS turlar
+RETURN s, hatlar, turlar
+```
+
+### Sorgu 6: İstasyon İstatistikleri (En Yoğun Duraklar)
+- **Nerede Kullanıldı:** `IstasyonController.cs` -> `/api/istasyon/istatistik`
+- **Neden Kullanıldı:** Ağa en çok bağlanan düğümleri (hub/merkez istasyonlar) bularak istatistik panelinde göstermek için. `count(r)` ile ilişki sayıları toplanıp büyükten küçüğe sıralanır.
+- **Kod:**
+```cypher
+MATCH (l:Lokasyon)
+OPTIONAL MATCH (l)-[r:BAGLANTI]-()
+WITH l, count(r) AS baglantiSayisi,
+     [x IN collect(DISTINCT r.hat) WHERE x IS NOT NULL] AS hatlar,
+     [x IN collect(DISTINCT r.tur) WHERE x IS NOT NULL] AS turlar
+ORDER BY baglantiSayisi DESC LIMIT 10
+RETURN l.isim AS isim, l.id AS id, baglantiSayisi, hatlar, turlar
+```
+
+5. SONUÇ
+------------------------------------------------------------------------
+Geliştirilen bu Neo4j tabanlı Rota Planlayıcı, çizge teorisinin pratik bir uygulamasını başarıyla sunmaktadır. APOC eklentisiyle desteklenen Cypher sorguları saniyenin küçük bir diliminde sonuç üreterek .NET backend'ine ulaştırmakta, JavaScript tabanlı frontend ise Leaflet arayüzünde veriyi görselleştirmektedir. Geleneksel SQL sistemleriyle çözülmesi çok karmaşık ve ağır olacak bu problem, Graph veritabanı sayesinde doğal, hızlı ve ölçeklenebilir şekilde çözülmüştür.
