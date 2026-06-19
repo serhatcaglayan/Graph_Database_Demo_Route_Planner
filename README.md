@@ -1,6 +1,6 @@
 # 📍 Neo4j Tabanlı Şehir Rota Planlayıcı (Adana Transit)
 
-Bu proje, Adana şehri için tasarlanmış, toplu taşıma (metro ve otobüs) hatlarını kullanarak başlangıç noktasından hedef noktaya en uygun rotaları hesaplayan bir yönlendirme (routing) uygulamasıdır. 
+Bu proje, A şehri için rastgele tasarlanmış, toplu taşıma (metro ve otobüs) hatlarını kullanarak başlangıç noktasından hedef noktaya en uygun rotaları hesaplayan bir yönlendirme (routing) uygulamasıdır. 
 
 Geleneksel ilişkisel veritabanlarının (SQL) rota ve ağ problemlerindeki performans sorunlarını ve karmaşıklıklarını aşmak amacıyla projede tamamen **Çizge Veritabanı (Graph Database)** teknolojisi kullanılmıştır.
 
